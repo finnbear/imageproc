@@ -23,6 +23,22 @@ where
     out
 }
 
+/// The contents of a polygon on a new copy of an image.
+///
+/// Draws as much of a filled polygon as lies within image bounds. The provided
+/// list of points should be an open path, i.e. the first and last points must not be equal.
+/// An implicit edge is added from the last to the first point in the slice.
+#[must_use = "the function does not modify the original image"]
+pub fn draw_filled_polygon<I>(image: &I, poly: &[Point<i32>], color: I::Pixel) -> Image<I::Pixel>
+where
+    I: GenericImage,
+{
+    let mut out = ImageBuffer::new(image.width(), image.height());
+    out.copy_from(image, 0, 0).unwrap();
+    draw_filled_polygon_mut(&mut out, poly, color);
+    out
+}
+
 /// Draws a polygon and its contents on an image in place.
 ///
 /// Draws as much of a filled polygon as lies within image bounds. The provided
@@ -30,6 +46,30 @@ where
 /// An implicit edge is added from the last to the first point in the slice.
 pub fn draw_polygon_mut<C>(canvas: &mut C, poly: &[Point<i32>], color: C::Pixel)
 where
+    C: Canvas,
+{
+    impl_draw_polygon_mut(canvas, poly, true, true, color);
+}
+
+/// Draws the contents of a polygon on an image in place.
+///
+/// Draws as much of a filled polygon as lies within image bounds. The provided
+/// list of points should be an open path, i.e. the first and last points must not be equal.
+/// An implicit edge is added from the last to the first point in the slice.
+pub fn draw_filled_polygon_mut<C>(canvas: &mut C, poly: &[Point<i32>], color: C::Pixel)
+where
+    C: Canvas,
+{
+    impl_draw_polygon_mut(canvas, poly, true, false, color);
+}
+
+fn impl_draw_polygon_mut<C>(
+    canvas: &mut C,
+    poly: &[Point<i32>],
+    fill: bool,
+    stroke: bool,
+    color: C::Pixel,
+) where
     C: Canvas,
 {
     if poly.is_empty() {
@@ -60,54 +100,59 @@ where
     closed.push(poly[0]);
 
     let edges: Vec<&[Point<i32>]> = closed.windows(2).collect();
-    let mut intersections = Vec::new();
 
-    for y in y_min..y_max + 1 {
-        for edge in &edges {
-            let p0 = edge[0];
-            let p1 = edge[1];
+    if fill {
+        let mut intersections = Vec::new();
 
-            if p0.y <= y && p1.y >= y || p1.y <= y && p0.y >= y {
-                if p0.y == p1.y {
-                    // Need to handle horizontal lines specially
-                    intersections.push(p0.x);
-                    intersections.push(p1.x);
-                } else if p0.y == y || p1.y == y {
-                    if p1.y > y {
+        for y in y_min..y_max + 1 {
+            for edge in &edges {
+                let p0 = edge[0];
+                let p1 = edge[1];
+
+                if p0.y <= y && p1.y >= y || p1.y <= y && p0.y >= y {
+                    if p0.y == p1.y {
+                        // Need to handle horizontal lines specially
                         intersections.push(p0.x);
-                    }
-                    if p0.y > y {
                         intersections.push(p1.x);
+                    } else if p0.y == y || p1.y == y {
+                        if p1.y > y {
+                            intersections.push(p0.x);
+                        }
+                        if p0.y > y {
+                            intersections.push(p1.x);
+                        }
+                    } else {
+                        let fraction = (y - p0.y) as f32 / (p1.y - p0.y) as f32;
+                        let inter = p0.x as f32 + fraction * (p1.x - p0.x) as f32;
+                        intersections.push(inter.round() as i32);
                     }
-                } else {
-                    let fraction = (y - p0.y) as f32 / (p1.y - p0.y) as f32;
-                    let inter = p0.x as f32 + fraction * (p1.x - p0.x) as f32;
-                    intersections.push(inter.round() as i32);
                 }
             }
+
+            intersections.sort_unstable();
+            intersections.chunks(2).for_each(|range| {
+                let mut from = min(range[0], width as i32);
+                let mut to = min(range[1], width as i32 - 1);
+                if from < width as i32 && to >= 0 {
+                    // draw only if range appears on the canvas
+                    from = max(0, from);
+                    to = max(0, to);
+
+                    for x in from..to + 1 {
+                        canvas.draw_pixel(x as u32, y as u32, color);
+                    }
+                }
+            });
+
+            intersections.clear();
         }
-
-        intersections.sort_unstable();
-        intersections.chunks(2).for_each(|range| {
-            let mut from = min(range[0], width as i32);
-            let mut to = min(range[1], width as i32 - 1);
-            if from < width as i32 && to >= 0 {
-                // draw only if range appears on the canvas
-                from = max(0, from);
-                to = max(0, to);
-
-                for x in from..to + 1 {
-                    canvas.draw_pixel(x as u32, y as u32, color);
-                }
-            }
-        });
-
-        intersections.clear();
     }
 
-    for edge in &edges {
-        let start = (edge[0].x as f32, edge[0].y as f32);
-        let end = (edge[1].x as f32, edge[1].y as f32);
-        draw_line_segment_mut(canvas, start, end, color);
+    if stroke {
+        for edge in &edges {
+            let start = (edge[0].x as f32, edge[0].y as f32);
+            let end = (edge[1].x as f32, edge[1].y as f32);
+            draw_line_segment_mut(canvas, start, end, color);
+        }
     }
 }
